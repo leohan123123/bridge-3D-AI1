@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bridge 3D Model Viewer</title>
+    <style>
+        body { margin: 0; font-family: Arial, sans-serif; display: flex; flex-direction: column; height: 100vh; }
+        #viewer-container { flex-grow: 1; position: relative; background-color: #f0f0f0; }
+        #controls-panel { padding: 10px; background-color: #e0e0e0; border-bottom: 1px solid #ccc; }
+        #info-panel { padding: 10px; background-color: #f9f9f9; width: 250px; border-left: 1px solid #ccc; overflow-y: auto; }
+        #main-content { display: flex; flex-grow: 1; }
+        #toolbar { margin-bottom:10px; }
+        button { margin-right: 5px; padding: 5px 10px; }
+        textarea { width: 98%; height: 100px; margin-bottom: 10px; }
+        #loading-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 1.5em;
+            color: #333;
+            display: none; /* Hidden by default */
+        }
+    </style>
+</head>
+<body>
+    <div id="controls-panel">
+        <h3>Bridge Design Input</h3>
+        <textarea id="bridgeDesignText" placeholder="Enter bridge design description (e.g., A 50m long box girder bridge...)"></textarea>
+        <textarea id="modelRequirementsText" placeholder="Enter model requirements (e.g., Realistic concrete material, basic lighting...)"></textarea>
+        <button id="generateModelBtn">Generate Model</button>
+        <div id="toolbar">
+            <h4>Toolbar (Placeholders)</h4>
+            <button>View Toggle</button>
+            <button>Measure Distance</button>
+            <button>Section Cut</button>
+        </div>
+    </div>
+    <div id="main-content">
+        <div id="viewer-container">
+            <div id="loading-indicator">Loading...</div>
+            <!-- Three.js canvas will be appended here by model3d_viewer.js -->
+        </div>
+        <div id="info-panel">
+            <h4>Model Information</h4>
+            <pre id="modelInfoContent">No model loaded yet.</pre>
+        </div>
+    </div>
+
+    <!-- Three.js library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls for mouse interaction -->
+    <script src="https://unpkg.com/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+
+    <!-- Our viewer script -->
+    <script src="js/model3d_viewer.js"></script>
+</body>
+</html>

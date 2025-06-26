@@ -1,4 +1,4 @@
-fastapi>=0.100.0 # Using a recent version, can be adjusted
-uvicorn[standard]>=0.20.0 # Includes standard dependencies like websockets, http-tools
-pydantic>=2.0.0 # For data models
-httpx>=0.25.0 # For making async HTTP requests in llm_service
+fastapi
+uvicorn[standard] # Includes pydantic, starlette, etc.
+# three.js is a frontend library, included via CDN in HTML.
+# No explicit Python dependencies for the core generation logic other than standard library.
