@@ -1,4 +1,10 @@
-fastapi
-uvicorn[standard] # Includes pydantic, starlette, etc.
-# three.js is a frontend library, included via CDN in HTML.
-# No explicit Python dependencies for the core generation logic other than standard library.
+fastapi==0.104.1
+uvicorn==0.24.0
+pydantic==2.5.0
+openai==1.3.0
+httpx==0.25.0
+jinja2==3.1.2
+python-multipart==0.0.6
+# Added Flask because the current app.py uses it for the UI and mock API.
+# This can be removed if app.py is fully converted to FastAPI and another solution for serving HTML/static is used with FastAPI.
+Flask==3.0.0 # Or a version compatible with your Jinja2 if there are issues. Let's use a recent one.

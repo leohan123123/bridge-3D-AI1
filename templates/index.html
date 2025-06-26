@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>桥梁智能设计系统</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/bridge_design.css') }}">
+</head>
+<body>
+    <div class="bridge-design-app">
+        <header class="app-header">
+            <h1>桥梁智能设计系统</h1>
+            <nav class="main-nav">
+                <!-- Navigation links can be added here -->
+            </nav>
+        </header>
+
+        <main class="design-workspace">
+            <aside class="requirements-panel">
+                <h2>需求输入</h2>
+                <p>
+                    <label for="span-input">Span (m):</label>
+                    <input type="number" id="span-input" value="100"><br>
+                    <label for="load-input">Load (kN/m):</label>
+                    <input type="number" id="load-input" value="50"><br>
+                </p>
+                <button id="start-design-button">开始设计流程 (Test)</button>
+                <div id="user-message-area" style="margin-top: 10px;"></div>
+            </aside>
+
+            <section class="design-content">
+                <div class="tabs">
+                    <button class="tab active" data-tab="requirements">需求分析</button>
+                    <button class="tab" data-tab="design">设计方案</button>
+                    <button class="tab" data-tab="drawings">工程图纸</button>
+                    <button class="tab" data-tab="model3d">3D模型</button>
+                </div>
+
+                <div class="tab-content">
+                    <div id="requirements-content" class="tab-pane active">
+                        <h3>需求分析内容</h3>
+                        <!-- Dynamic content for requirements analysis -->
+                    </div>
+                    <div id="design-content" class="tab-pane">
+                        <h3>设计方案内容</h3>
+                        <!-- Dynamic content for design -->
+                    </div>
+                    <div id="drawings-content" class="tab-pane">
+                        <h3>工程图纸内容</h3>
+                        <!-- Dynamic content for drawings -->
+                    </div>
+                    <div id="model3d-content" class="tab-pane">
+                        <h3>3D模型内容</h3>
+                        <!-- Dynamic content for 3D model -->
+                    </div>
+                </div>
+            </section>
+
+            <aside class="properties-panel">
+                <h2>参数编辑与设计说明</h2>
+                <!-- Parameter editing and design notes will go here -->
+                <div id="design-actions">
+                    <h3>导出选项</h3>
+                    <button id="export-pdf-button">导出PDF报告</button>
+                    <button id="export-dwg-button">导出DWG图纸</button>
+                    <button id="export-model-button">导出3D模型</button>
+                </div>
+                <div id="design-history-section" style="margin-top: 20px;">
+                    <h3>设计历史</h3>
+                    <button id="load-history-button">加载历史</button>
+                    <ul id="design-history-list">
+                        <!-- History items will be populated here -->
+                    </ul>
+                </div>
+            </aside>
+        </main>
+    </div>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/design_workflow.js') }}"></script>
+</body>
+</html>
