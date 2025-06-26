@@ -1,0 +1,135 @@
+/* Basic styles for the bridge design application */
+body {
+    font-family: Arial, sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f4;
+    color: #333;
+}
+
+.bridge-design-app {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+}
+
+.app-header {
+    background-color: #004488; /* Professional blue */
+    color: white;
+    padding: 1rem;
+    text-align: center;
+}
+
+.app-header h1 {
+    margin: 0;
+    font-size: 1.8rem;
+}
+
+.main-nav {
+    /* Styles for navigation if any links are added */
+}
+
+.design-workspace {
+    display: flex;
+    flex-grow: 1;
+    overflow: hidden; /* Prevent scrollbars on main workspace if sidebars have their own */
+}
+
+.requirements-panel,
+.properties-panel {
+    width: 20%;
+    background-color: #e9ecef;
+    padding: 1rem;
+    overflow-y: auto; /* Allow scrolling if content exceeds height */
+    border-left: 1px solid #ccc;
+    border-right: 1px solid #ccc;
+}
+
+.requirements-panel h2,
+.properties-panel h2 {
+    font-size: 1.2rem;
+    color: #004488;
+    margin-top: 0;
+}
+
+.design-content {
+    flex-grow: 1;
+    padding: 1rem;
+    background-color: #fff;
+    display: flex;
+    flex-direction: column;
+}
+
+.tabs {
+    display: flex;
+    border-bottom: 2px solid #004488;
+    margin-bottom: 1rem;
+}
+
+.tab {
+    padding: 0.8rem 1.5rem;
+    cursor: pointer;
+    border: none;
+    background-color: #f0f0f0;
+    margin-right: 5px;
+    font-size: 1rem;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+}
+
+.tab.active {
+    background-color: #004488;
+    color: white;
+    border-bottom: 2px solid #004488; /* continuité visuelle */
+}
+
+.tab:hover {
+    background-color: #ddd;
+}
+
+.tab.active:hover {
+    background-color: #003366; /* Darker shade for active tab hover */
+}
+
+.tab-content {
+    flex-grow: 1;
+    overflow-y: auto; /* If content within tab is long */
+}
+
+.tab-pane {
+    display: none; /* Hidden by default */
+    padding: 1rem;
+    border: 1px solid #ddd;
+    border-top: none; /* Tabs provide top border */
+    background-color: #fff;
+}
+
+.tab-pane.active {
+    display: block; /* Shown when active */
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+    .design-workspace {
+        flex-direction: column;
+    }
+
+    .requirements-panel,
+    .properties-panel {
+        width: 100%;
+        height: auto; /* Adjust height for column layout */
+        max-height: 200px; /* Example max height */
+        border-left: none;
+        border-right: none;
+        border-bottom: 1px solid #ccc;
+    }
+
+    .app-header h1 {
+        font-size: 1.5rem;
+    }
+
+    .tab {
+        padding: 0.6rem 1rem;
+        font-size: 0.9rem;
+    }
+}
