@@ -90,6 +90,85 @@ async def generate_design(requirements: DesignRequirements) -> BridgeDesign:
     design_scheme = design_generator_service.generate_design_scheme(requirements_dict)
     return design_scheme
 
+# Initialize DrawingService
+from services.drawing_service import DrawingService
+drawing_service = DrawingService()
+
+@app.post("/api/generate_drawings")
+async def generate_drawings(design: BridgeDesign, drawing_types: List[str], scale: float = 1.0):
+    """
+    Generates 2D engineering drawings in SVG format based on the bridge design and drawing types.
+    Supported drawing_types:
+    - "bridge_elevation_view"
+    - "plan_view" (placeholder)
+    - "girder_section_view"
+    - "pier_section_view" (placeholder for pier specific section)
+    - "foundation_plan_view" (placeholder)
+    - "typical_node_detail" (placeholder)
+    """
+    # The DrawingService will take the BridgeDesign Pydantic model (or its dict representation)
+    # and generate SVG strings for the requested drawing_types.
+    # For now, design.dict() will be passed.
+
+    # The prompt's example output implies specific keys for specific drawings.
+    # The drawing_service.generate_drawings currently returns a dict where keys are drawing_types.
+    # We might need to adapt this if the API contract is strict about output keys like
+    # "elevation_view", "plan_view", "section_views", "detail_drawings".
+    # For now, let's assume the service returns a dict that can be directly returned or easily mapped.
+
+    generated_svgs = drawing_service.generate_drawings(design.model_dump(), drawing_types, scale)
+
+    # Based on the example response structure:
+    # {
+    # "elevation_view": svg_content,
+    # "plan_view": svg_content,
+    # "section_views": [svg_content1, svg_content2],
+    # "detail_drawings": [svg_content3, svg_content4]
+    # }
+    # We need to map the output from drawing_service to this structure.
+    # This requires knowing which drawing_types from the input correspond to which keys in the output.
+
+    response_payload = {
+        "elevation_view": None,
+        "plan_view": None,
+        "section_views": [],
+        "detail_drawings": []
+    }
+
+    # Example mapping based on typical drawing types from the prompt.
+    # This mapping logic might need refinement based on exact drawing_types strings.
+    if "bridge_elevation_view" in generated_svgs: # This matches a key used in drawing_service
+        response_payload["elevation_view"] = generated_svgs["bridge_elevation_view"]
+
+    if "plan_view" in generated_svgs: # Assuming "plan_view" is a type the service can generate
+        response_payload["plan_view"] = generated_svgs["plan_view"]
+
+    # For section views, we'd collect all relevant ones.
+    # These type names are examples.
+    section_type_keys = ["girder_section_view", "pier_section_view", "main_beam_section_view"]
+    for sec_key in section_type_keys:
+        if sec_key in generated_svgs:
+            response_payload["section_views"].append(generated_svgs[sec_key])
+
+    # For detail drawings
+    detail_type_keys = ["typical_node_detail", "foundation_reinforcement_detail"]
+    for det_key in detail_type_keys:
+        if det_key in generated_svgs:
+            response_payload["detail_drawings"].append(generated_svgs[det_key])
+
+    # Add any drawings that weren't specifically mapped, perhaps in a generic key
+    # This ensures all generated drawings are returned if they don't fit the specific keys.
+    # response_payload["other_drawings"] = generated_svgs # Or handle as per requirements
+
+    # If drawing_types contains items not matching the above, they will be in generated_svgs
+    # but not explicitly in the structured response_payload unless handled by a generic key.
+    # For now, only specifically named keys in the response_payload are populated.
+    # If a drawing type like "bridge_general_arrangement_plan" was requested and generated,
+    # it needs to be mapped to "plan_view" or another appropriate field.
+
+    return response_payload
+
+
 @app.post("/api/optimize_design")
 async def optimize_design(current_design: BridgeDesign, optimization_goals: List[str]):
     """
