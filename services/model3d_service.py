@@ -2,23 +2,58 @@ import json
 from models.geometry_builder import BridgeGeometryBuilder
 from generators.threejs_generator import ThreeJSGenerator
 
-# LLM_PROMPT (as defined in the problem description)
+# LLM_PROMPT
 MODEL3D_PROMPT = """
-基于以下桥梁设计数据，生成完整的Three.js 3D模型代码：
+基于以下桥梁设计数据和模型要求，生成用于创建Three.js 3D模型的结构化JSON描述。
 
-设计数据：{bridge_design}
-模型要求：{model_requirements}
+设计数据 (JSON):
+{bridge_design}
 
-请生成包含以下内容的Three.js代码：
-1. 场景初始化和相机设置
-2. 主梁几何体创建（根据截面形状和跨径）
-3. 桥墩几何体创建（根据墩型和尺寸）
-4. 基础几何体创建
-5. 材质和纹理设置
-6. 光照和渲染设置
-7. 交互控制（旋转、缩放、平移）
+模型要求:
+{model_requirements}
 
-确保几何尺寸准确，材质真实，支持基本交互操作。
+请输出一个JSON对象，包含以下主要键：'scene_setup', 'girders', 'piers', 'foundations'。
+每个组件（girder, pier, foundation）应包含其类型 (type), 关键尺寸 (dimensions), 材质参数 (material), 和位置 (position)。
+
+示例输出结构:
+{{
+    "scene_setup": {{
+        "camera_position": [10, 30, 70],
+        "backgroundColor": "e0e0e0",
+        "ambient_light_color": "404040",
+        "directional_light_color": "ffffff"
+    }},
+    "girders": [
+        {{
+            "name": "mainGirder_1",
+            "type": "box", // e.g., "box", "t_girder", "i_girder" based on bridge_design
+            "dimensions": {{ "length": 50, "width": 6, "height": 3, "wall_thickness": 0.4 }}, // Extracted/calculated from bridge_design
+            "material": {{ "type": "MeshStandardMaterial", "parameters": {{ "color": "0xcccccc" }} }},
+            "position": [0, 10, 0] // Example position
+        }}
+    ],
+    "piers": [
+        {{
+            "name": "pier_1",
+            "type": "cylindrical", // e.g., "cylindrical", "rectangular"
+            "dimensions": {{ "height": 10, "radius": 1.0 }}, // or {{ "height": 10, "width": 1.5, "depth": 2.0 }}
+            "material": {{ "type": "MeshStandardMaterial", "parameters": {{ "color": "0x888888" }} }},
+            "position": [-15, 0, 0]
+        }}
+    ],
+    "foundations": [
+        {{
+            "name": "foundation_1",
+            "type": "spread_footing", // e.g., "pile_cap", "spread_footing"
+            "dimensions": {{ "length": 4, "width": 4, "height": 1.5 }},
+            "material": {{ "type": "MeshStandardMaterial", "parameters": {{ "color": "0x777777" }} }},
+            "position": [-15, -5.75, 0] // Position relative to its pier or absolute
+        }}
+    ]
+}}
+
+确保所有尺寸和类型信息与输入的`bridge_design`数据一致。材质和模型要求应按`model_requirements`说明处理。
+JSON Output:
 """
 
 class Model3DService:

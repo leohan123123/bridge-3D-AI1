@@ -8,15 +8,33 @@ DESIGN_GENERATION_PROMPT = """
 设计约束：{constraints}
 相关规范：{standards}
 
-请按照以下结构输出设计方案：
-1. 桥梁类型选择及理由 (e.g., {{ "type": "简支梁桥", "reason": "..." }})
-2. 主要结构参数 (e.g., {{ "main_span_m": 30, "beam_height_m": 1.8, "bridge_width_m": 12 }})
-3. 材料规格选择 (e.g., {{ "main_beams": "C50 Concrete", "deck_slab": "C40 Concrete" }})
-4. 基础形式和尺寸 (e.g., {{ "type": "Pile Foundation", "pile_diameter_m": 1.5 }})
-5. 关键节点构造 (e.g., {{ "beam_to_pier_connection": "Elastomeric bearings" }})
-6. 施工要点说明 (as a string)
+请按照以下结构输出详细的设计方案，确保充分考虑抗震设计要求（如果适用）：
+1. 桥梁类型选择及理由:
+   - type: (e.g., "预应力混凝土连续梁桥")
+   - reason: (说明选择理由，包括如何满足跨度、荷载、抗震<如果适用>等要求)
+2. 主要结构参数:
+   - main_span_m: (e.g., 60)
+   - other_spans_m: (e.g., [45, 45] or null)
+   - beam_height_m: (e.g., 3.0)
+   - bridge_width_m: (根据车道数和人行道等需求确定, e.g., 17.0 for 双向四车道)
+   - number_of_lanes: (e.g., 4)
+   - seismic_design_intensity: (e.g., "8度" or null, 说明采取了哪些总体抗震措施或参数调整)
+3. 材料规格选择:
+   - main_beams_material: (e.g., "C50预应力混凝土")
+   - deck_slab_material: (e.g., "C40混凝土")
+   - reinforcement_steel_grade: (e.g., "HRB400/HRB500")
+   - prestressing_steel_type: (e.g., "高强度低松弛钢绞线 ASTM A416 Grade 270")
+4. 基础形式和尺寸:
+   - type: (e.g., "钻孔灌注桩基础", "扩大基础")
+   - dimensions: (e.g., {{ "pile_diameter_m": 1.5, "pile_length_m": 25, "pile_cap_thickness_m": 2.0 }})
+   - seismic_considerations: (说明基础设计如何满足抗震要求, e.g., "采用大直径桩，增加桩长以穿越液化土层")
+5. 关键节点构造:
+   - beam_to_pier_connection: (e.g., "盆式橡胶支座，考虑多向位移和抗震限位装置")
+   - expansion_joints_type: (e.g., "模数式伸缩缝")
+   - other_seismic_details: (e.g., "桥墩塑性铰区设计", "防落梁装置")
+6. 施工要点说明: (简述关键施工步骤和注意事项，例如预应力张拉顺序、连续梁合龙方案等)
 
-确保设计符合相关规范，参数合理，构造可行。请提供JSON-like structures for each section where appropriate, as indicated in the examples.
+确保设计符合输入的相关规范，所有参数专业且合理，构造详细可行。请为每个结构化的部分提供JSON兼容的字典格式。
 """
 
 # Example of another prompt, perhaps for optimization or a specific component design
