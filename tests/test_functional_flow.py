@@ -1,196 +1,197 @@
 import asyncio
 import unittest
+import json
+from unittest.mock import patch, AsyncMock
 import sys
-import os
 from pathlib import Path
 
-# Add project root to sys.path to allow importing project modules
-# Assumes this test script is in project_root/tests/
+# Add project root to sys.path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root))
 
-from models import BridgeRequest, BridgeDesign
-from services.bridge_service import BridgeService
-from services.llm_service import LLMService # For potential mocking or direct inspection
-from config import LLM_CONFIG # To check API key status
+# Import the Flask app instance
+from app import app
+from models.data_models import BridgeRequest # For payload structure reference
 
-class TestFunctionalFlow(unittest.TestCase):
+class TestAPIIntegrationFlow(unittest.TestCase):
 
     def setUp(self):
-        # This method will be called before each test
-        self.bridge_service = BridgeService()
-        # It might be beneficial to mock LLMService to avoid actual API calls during unit/functional tests
-        # For now, we will proceed with the actual service, keeping in mind the API key limitations
+        self.app = app # The Flask app instance
+        self.client = self.app.test_client()
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
 
-        # Test case input
-        self.test_case_description = "设计一座跨度60米的预应力混凝土连续梁桥，双向四车道，位于8度抗震区"
-        self.bridge_request = BridgeRequest(
-            user_requirements=self.test_case_description,
-            project_conditions={
-                "seismic_intensity": "8度", # 8 degrees seismic zone
-                "road_lanes": "双向四车道" # Bidirectional 4 lanes
-            },
-            design_constraints={
-                "bridge_type_preference": "预应力混凝土连续梁桥", # Prestressed concrete continuous girder bridge
-                "span_preference_meters": 60
-            }
+        # Test case input based on "设计一座100米跨度的预应力混凝土连续梁桥"
+        self.test_user_requirements = "设计一座100米跨度的预应力混凝土连续梁桥，双向四车道，位于8度抗震区"
+        self.test_project_conditions = {
+            "seismic_intensity": "8度",
+            "road_lanes": "双向四车道"
+        }
+        self.test_design_constraints = {
+            # "bridge_type_preference": "预应力混凝土连续梁桥", # Removed to test LLM refinement path
+            "span_preference_meters": 100
+        }
+        self.api_payload = {
+            "user_requirements": self.test_user_requirements,
+            "project_conditions": self.test_project_conditions,
+            "design_constraints": self.test_design_constraints # Now without bridge_type_preference
+        }
+
+        # Expected values based on our BridgeService logic for this input
+        self.expected_span_m = 100.0
+        # BridgeService.refine_parameters_with_knowledge will produce this for the mocked LLM output
+        self.expected_bridge_type_after_refinement = "Prestressed Concrete Continuous Girder Bridge"
+        self.expected_bridge_type_keywords = ["prestressed", "concrete", "continuous", "girder"]
+        self.expected_min_bridge_width = 15.0 # For dual 4 lanes
+
+    def tearDown(self):
+        self.loop.close()
+
+    @patch('services.llm_service.LLMService.analyze_text_with_failover', new_callable=AsyncMock)
+    def test_e2e_api_flow(self, mock_llm_analyze):
+        print(f"\n--- TestAPIIntegrationFlow: test_e2e_api_flow ---")
+
+        # --- Step 1: Mock LLM Response ---
+        mock_llm_output = {
+            "bridge_type_preference": "prestressed concrete continuous beam bridge", # LLM might say "beam"
+            "span_length_description": "a 100m crossing",
+            "estimated_span_meters": 100.0,
+            "load_requirements": "highway traffic",
+            "site_terrain": "generic",
+            "specific_materials": "prestressed concrete", # Important for refinement
+            "budget_constraints": "medium",
+            "aesthetic_preferences": "functional",
+            "environmental_factors": "seismic zone 8",
+            "road_lanes_description": "双向四车道"
+        }
+        mock_llm_analyze.return_value = (mock_llm_output, "MockLLMProvider")
+
+        # --- Step 2: Call /api/v1/generate_design ---
+        print("\nAction: Calling /api/v1/generate_design...")
+        response_design = self.client.post('/api/v1/generate_design', json=self.api_payload)
+        print(f"Response Status: {response_design.status_code}")
+        response_design_data = response_design.get_json()
+
+        self.assertEqual(response_design.status_code, 200, f"generate_design failed: {response_design_data.get('error', {}).get('details', response_design_data)}")
+        self.assertIn("design_id", response_design_data)
+        self.assertIn("design_data", response_design_data)
+
+        actual_design_data = response_design_data["design_data"]
+        self.assertIsNotNone(actual_design_data)
+
+        # Validate that BridgeService used the refined LLM output for bridge_type
+        self.assertEqual(actual_design_data.get("bridge_type"), self.expected_bridge_type_after_refinement)
+        # Check with keywords as well, as the exact string might vary slightly with future refactorings of refine_parameters
+        self.assertTrue(all(keyword.lower() in actual_design_data.get("bridge_type", "").lower() for keyword in self.expected_bridge_type_keywords),
+                        f"Bridge type '{actual_design_data.get('bridge_type')}' doesn't match all keywords {self.expected_bridge_type_keywords}")
+
+        self.assertAlmostEqual(actual_design_data.get("span_lengths", [0])[0], self.expected_span_m, delta=1.0)
+        self.assertGreaterEqual(actual_design_data.get("bridge_width", 0), self.expected_min_bridge_width)
+
+        materials_str_lower = str(actual_design_data.get("materials", {})).lower()
+        self.assertTrue("prestressed" in materials_str_lower or "prestressing" in materials_str_lower,
+                        f"Materials should mention prestressing/prestressed. Got: {materials_str_lower}")
+        self.assertIn("concrete", materials_str_lower, "Materials should mention concrete")
+
+        # --- Step 3: Call /api/v1/generate_2d_drawing ---
+        print("\nAction: Calling /api/v1/generate_2d_drawing...")
+        payload_2d = {"design_data": actual_design_data}
+        response_2d = self.client.post('/api/v1/generate_2d_drawing', json=payload_2d)
+        print(f"Response Status: {response_2d.status_code}")
+        response_2d_data = response_2d.get_json()
+
+        self.assertEqual(response_2d.status_code, 200, f"generate_2d_drawing failed: {response_2d_data.get('error')}")
+        self.assertIn("drawing_id", response_2d_data)
+        self.assertIn("svg_content", response_2d_data)
+        self.assertTrue(response_2d_data["svg_content"].startswith("<svg"))
+        self.assertIn(f"Span: {self.expected_span_m:.2f} m", response_2d_data["svg_content"])
+
+        # --- Step 4: Call /api/v1/generate_3d_model_data ---
+        print("\nAction: Calling /api/v1/generate_3d_model_data...")
+        payload_3d = {"design_data": actual_design_data}
+        response_3d = self.client.post('/api/v1/generate_3d_model_data', json=payload_3d)
+        print(f"Response Status: {response_3d.status_code}")
+        response_3d_data = response_3d.get_json()
+
+        self.assertEqual(response_3d.status_code, 200, f"generate_3d_model_data failed: {response_3d_data.get('error')}")
+        self.assertIn("model_id", response_3d_data)
+        self.assertIn("model_data", response_3d_data)
+        self.assertEqual(response_3d_data["format"], "json_scene_description")
+
+        model_json = response_3d_data["model_data"]
+        self.assertIn("scene_setup", model_json)
+        self.assertIn("materials", model_json)
+        self.assertIn("components", model_json)
+        self.assertGreater(len(model_json["components"]), 0, "3D model should have components")
+
+        found_deck = any(
+            comp.get("geometry", {}).get("type") == "BoxGeometry" and
+            abs(comp["geometry"].get("args", [0,0,0])[2] - self.expected_span_m) < 1.0
+            for comp in model_json["components"] if comp.get("type") == "deck_box"
+        ) or any (
+            comp.get("geometry", {}).get("type") == "BoxGeometry" and
+            abs(comp["geometry"].get("args", [0,0,0])[2] - self.expected_span_m) < 1.0
+            for comp in model_json["components"] if "girder" in comp.get("type","")
         )
-        self.expected_span_m = 60.0
-        self.expected_bridge_type_keywords = ["连续梁", "prestressed", "concrete"] # Keywords for continuous girder, prestressed, concrete
-        self.expected_lanes_info = ["四车道", "4 lanes", "four-lane"] # Keywords for 4 lanes
-        self.expected_seismic_info = ["8度", "seismic zone 8", "抗震"] # Keywords for seismic zone 8
+        self.assertTrue(found_deck, f"Could not find a main deck/girder component with span approx {self.expected_span_m}m in 3D model data.")
 
-    async def test_full_design_flow(self):
-        print(f"\n--- TestFunctionalFlow: test_full_design_flow ---")
-        print(f"Input BridgeRequest: {self.bridge_request.model_dump_json(indent=2)}")
+        print("\n--- TestAPIIntegrationFlow: test_e2e_api_flow completed successfully ---")
 
-        # 1. Analyze User Requirements
-        print("\nStep 1: Analyzing User Requirements...")
-        # Temporarily modify LLM config if API key is placeholder to ensure controlled behavior
-        original_deepseek_key = LLM_CONFIG["deepseek"]["api_key"]
-        deepseek_key_is_placeholder = original_deepseek_key == "YOUR_DEEPSEEK_API_KEY"
 
-        if deepseek_key_is_placeholder:
-            print("DeepSeek API key is a placeholder. Modifying LLMService to simulate DeepSeek failure.")
-            # Option 1: Temporarily set key to None to force skip/fail
-            LLM_CONFIG["deepseek"]["api_key"] = None
-            # Re-initialize LLMService in bridge_service if it caches config at init
-            # self.bridge_service.llm_service = LLMService() # This might be needed if LLMService caches config
-            # For this test, we assume LLMService checks the config dynamically or was just initialized
+    @patch('services.llm_service.LLMService.analyze_text_with_failover', new_callable=AsyncMock)
+    def test_llm_failure_graceful_degradation(self, mock_llm_analyze):
+        print(f"\n--- TestAPIIntegrationFlow: test_llm_failure_graceful_degradation ---")
+        mock_llm_analyze.return_value = ({"error": "Simulated LLM provider failure", "details": "All LLM providers down"}, "none")
 
-        analyzed_params_result = await self.bridge_service.analyze_user_requirements(self.bridge_request.user_requirements)
+        response_design = self.client.post('/api/v1/generate_design', json=self.api_payload)
+        response_design_data = response_design.get_json()
 
-        if deepseek_key_is_placeholder:
-            LLM_CONFIG["deepseek"]["api_key"] = original_deepseek_key # Restore key
+        self.assertEqual(response_design.status_code, 500, "Expected 500 error due to LLM failure")
+        self.assertIn("error", response_design_data)
+        self.assertEqual(response_design_data.get("error"), "Failed to generate design")
 
-        print(f"Analyzed Parameters Result: {analyzed_params_result}")
+        details_raw = response_design_data.get("details")
+        self.assertIsNotNone(details_raw, "Details field should be present in error response")
 
-        self.assertIsNotNone(analyzed_params_result, "Analysis result should not be None")
-        if analyzed_params_result.get("error"):
-            print(f"LLM Analysis Error: {analyzed_params_result.get('details')}")
-            # If LLM calls are expected to fail due to no keys/connectivity,
-            # this path might be expected. For now, we'll assert no error if an LLM is theoretically available (e.g. Ollama)
-            # For a strict test of this function, we'd mock the LLM call.
-            # self.fail(f"LLM Analysis failed: {analyzed_params_result.get('details')}") # Or handle gracefully
-            print("Warning: LLM analysis failed. Downstream tests might be affected or use default values.")
-            # We can still proceed to see how generate_preliminary_design handles this.
+        details_data_dict = None
+        if isinstance(details_raw, str):
+            try:
+                details_data_dict = json.loads(details_raw)
+            except json.JSONDecodeError as e:
+                self.fail(f"The 'details' field was a string but not valid JSON: {details_raw}. Error: {e}")
+        elif isinstance(details_raw, dict):
+            details_data_dict = details_raw
         else:
-            # Basic checks on extracted parameters (these depend heavily on LLM's current capability and prompt)
-            # These are weak checks because actual LLM output is variable.
-            # A better approach is to mock LLM response for deterministic tests.
-            self.assertIn("bridge_type_preference", analyzed_params_result, "bridge_type_preference should be in analyzed_params")
-            self.assertIn("span_length_description", analyzed_params_result, "span_length_description should be in analyzed_params")
+            self.fail(f"The 'details' field was neither a string nor a dict. Type: {type(details_raw)}, Value: {details_raw}")
 
-            # We cannot deterministically check the *values* from the mock LLM output without more sophisticated mocking.
-            # For now, we accept that the mock LLM (Qwen) provides a structured response,
-            # and we will check how `generate_preliminary_design` handles this.
-            # The previous assertion for span_length_description content is removed as it's too strict for the current mock.
-            print(f"Note: Detailed content validation of analyzed_params_result is skipped due to mock LLM response. "
-                  f"Focusing on flow and BridgeService's ability to process this mock data.")
+        self.assertIsInstance(details_data_dict, dict, f"Details field, after potential parsing, should be a dict. Got {type(details_data_dict)}")
+        self.assertEqual(details_data_dict.get("bridge_type"), "Error - Analysis Failed",
+                         f"Details.bridge_type should indicate analysis failure. Got: {details_data_dict.get('bridge_type')}")
 
+        main_girder_details = details_data_dict.get("main_girder", {})
+        self.assertIsInstance(main_girder_details, dict, f"main_girder in details should be a dict, got {type(main_girder_details)}")
+        self.assertIn("Analysis failed", main_girder_details.get("error", ""),
+                      "main_girder.error message missing or incorrect in details")
 
-        # 2. Generate Preliminary Design
-        print("\nStep 2: Generating Preliminary Design...")
-        preliminary_design : BridgeDesign = await self.bridge_service.generate_preliminary_design(self.bridge_request)
-        print(f"Preliminary Design Output: {preliminary_design.model_dump_json(indent=2)}")
+        print("Graceful degradation test for LLM failure passed.")
 
-        self.assertIsNotNone(preliminary_design, "Preliminary design should not be None")
-        self.assertIsInstance(preliminary_design, BridgeDesign, "Output should be a BridgeDesign object")
-
-        if preliminary_design.bridge_type == "Error - Analysis Failed":
-            self.fail("Design generation failed due to analysis error. Check LLM connectivity or prompts.")
-
-        # Validate design parameters
-        self.assertTrue(any(keyword.lower() in preliminary_design.bridge_type.lower() for keyword in self.expected_bridge_type_keywords),
-                        f"Bridge type '{preliminary_design.bridge_type}' does not seem to match expected keywords: {self.expected_bridge_type_keywords}")
-
-        self.assertGreater(len(preliminary_design.span_lengths), 0, "Span lengths should be defined")
-        # Check if at least one span is close to the expected span
-        self.assertTrue(any(abs(span - self.expected_span_m) < 5 for span in preliminary_design.span_lengths), # Allow 5m tolerance
-                        f"No span length found close to {self.expected_span_m}m in {preliminary_design.span_lengths}")
-
-        self.assertGreater(preliminary_design.bridge_width, 0, "Bridge width should be positive")
-        # A dual carriageway with 4 lanes (2+2) plus shoulders/medians would typically be > 15m.
-        # (3.5m/lane * 4 = 14m) + extras.
-        # This is a heuristic check.
-        self.assertGreaterEqual(preliminary_design.bridge_width, 15.0, f"Bridge width {preliminary_design.bridge_width}m seems too narrow for dual 4 lanes.")
-
-
-        # Check for seismic considerations (this is a soft check based on current structure)
-        # A more robust check would need specific fields in BridgeDesign or use the new validator
-        design_notes_str = ""
-        if "project_notes" in preliminary_design.main_girder: # As per current BridgeService logic
-            design_notes_str += str(preliminary_design.main_girder["project_notes"]).lower()
-        if "constraints_notes" in preliminary_design.pier_design: # As per current BridgeService logic
-            design_notes_str += str(preliminary_design.pier_design["constraints_notes"]).lower()
-
-        self.assertTrue(any(keyword.lower() in design_notes_str for keyword in self.expected_seismic_info) or \
-                        any(keyword.lower() in preliminary_design.design_load.lower() for keyword in self.expected_seismic_info) or \
-                        any(keyword.lower() in str(preliminary_design.pier_design).lower() for keyword in self.expected_seismic_info), # Check in pier design itself
-                        f"No clear indication of seismic considerations for an 8-degree zone in notes/load: '{design_notes_str}', '{preliminary_design.design_load}', '{preliminary_design.pier_design}'")
-
-        # Check for material mentions
-        material_str = str(preliminary_design.materials).lower()
-        self.assertTrue("prestressed" in material_str or "prestressing" in material_str or "预应力" in material_str,
-                        f"Materials {material_str} do not explicitly mention 'prestressed/prestressing'.")
-        self.assertTrue("concrete" in material_str or "混凝土" in material_str,
-                        f"Materials {material_str} do not explicitly mention 'concrete'.")
-
-
-        # TODO: If DesignGenerator is the main entry point for a more detailed design,
-        #       it should be tested here as well, possibly using the output of preliminary_design
-        #       or the initial BridgeRequest. For now, focusing on BridgeService flow.
-        print("Functional flow test for BridgeService completed.")
-
-
-# To run this test:
-# Ensure you are in the project root directory.
-# Run the command: python -m unittest tests.test_functional_flow
-# (or if that doesn't work due to module path issues with `async def` in unittest pre 3.8 style)
-# You might need an async test runner or to run with `asyncio.run()` if using older python/unittest versions
-# For modern Python (3.8+), `async def` test methods in unittest are generally supported.
-
-async def main():
-    # This allows running the async test method directly if needed, or using a test runner
-    suite = unittest.TestSuite()
-    suite.addTest(TestFunctionalFlow("test_full_design_flow")) # Need to wrap in a way test runner understands async
-
-    # A simple way to run an async unittest method
-    test = TestFunctionalFlow("test_full_design_flow")
-    test.setUp()
-    await test.test_full_design_flow()
-    # test.tearDown() # if you have one
-
-async def run_single_test():
-    test = TestFunctionalFlow("test_full_design_flow")
-    test.setUp()
-    await test.test_full_design_flow()
 
 if __name__ == '__main__':
-    # This allows running the test file directly: `python tests/test_functional_flow.py`
-    # Using asyncio.run() to execute the async test method.
-    asyncio.run(run_single_test())
+    # To run tests using PyTest:
+    # 1. Ensure pytest and pytest-asyncio are installed: pip install pytest pytest-asyncio
+    # 2. Navigate to the project root directory in the terminal.
+    # 3. Run the command: pytest
+    # Pytest will automatically discover and run tests in files named test_*.py or *_test.py.
 
-    # For a full test suite with multiple tests, using a test runner like
-    # `pytest` with `pytest-asyncio` is recommended:
-    # 1. pip install pytest pytest-asyncio
-    # 2. Remove or comment out the `if __name__ == '__main__':` block above.
-    # 3. Run `pytest` from the project root directory.
-    # Pytest will automatically discover and run `async def` test methods.
-    #
-    # Alternatively, to use unittest's own discovery with potential async support:
-    # `python -m unittest discover -s tests`
-    # (This might require specific configurations or test runner for async tests
-    # if not using a framework like pytest-asyncio).
-    print("\nFunctional test execution finished.")
-    print("For comprehensive testing, consider using 'pytest' with 'pytest-asyncio'.")
+    # To run with unittest directly (less common for async, PyTest is preferred):
+    # This setup is primarily for PyTest. For `python -m unittest`, you might need a different runner for async tests.
+    # However, Flask test_client handles the async nature of the endpoint when called this way.
+    print("Running tests with unittest.main(). For better async support, consider using PyTest with pytest-asyncio.")
+    unittest.main()
 
 # Developer Notes:
-# - The test case `test_full_design_flow` covers the main path of BridgeService.
-# - It includes a basic mechanism to handle placeholder API keys for DeepSeek,
-#   allowing the test to proceed and check failover or error handling.
-# - Assertions are made on key aspects of the design output based on the input.
-# - The actual content of LLM-generated fields is variable, so checks are often
-#   keyword-based or look for presence of expected information.
-# - For more deterministic LLM-dependent tests, mocking LLMService responses
-#   would be necessary.
+# - This test class now uses Flask's test_client to interact with the API endpoints.
+# - LLMService.analyze_text_with_failover is mocked to provide controlled outputs.
+# - The e2e_api_flow test checks the sequence of API calls and validates key parts of their responses.
+# - The llm_failure_graceful_degradation test ensures the system handles LLM failures by returning appropriate error responses.
+# - This moves away from testing BridgeService internals directly and focuses on API contract and integration.
