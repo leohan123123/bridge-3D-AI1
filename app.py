@@ -1,132 +1,199 @@
-from flask import Flask, render_template, jsonify, request
+import asyncio
+from flask import Flask, render_template, jsonify, request, send_file
+import logging
+import uuid
+import io # For sending file-like objects
+
+# Project imports
+from models.data_models import BridgeRequest, BridgeDesign
+from services.bridge_service import BridgeService
+from generators.svg_generator import SVGGenerator
+from generators.threejs_generator import ThreeJSGenerator # Or your GLTFGenerator if created
 
 app = Flask(__name__)
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# Initialize services
+bridge_service = BridgeService()
+svg_generator = SVGGenerator()
+# Assuming ThreeJSGenerator is used for JSON scene description as per plan (Option B)
+model_generator = ThreeJSGenerator() # Replace with GLTFGenerator if that path is taken
 
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# Conceptual API Endpoints
-# TODO: Convert these Flask endpoints to FastAPI.
-# FastAPI will automatically generate OpenAPI (Swagger) documentation from path operations,
-# Pydantic models, and docstrings.
-
-# Example of how a FastAPI endpoint would look (for documentation context):
-# from fastapi import FastAPI
-# from pydantic import BaseModel
-#
-# class UserInput(BaseModel):
-#     span: float
-#     load: float
-#
-# class AnalysisResult(BaseModel):
-#     analysis_id: str
-#     summary: str
-#     received_input: UserInput
-#
-# app_fastapi = FastAPI() # This would be in main.py
-#
-# @app_fastapi.post("/api/v1/analyze_requirements", response_model=AnalysisResult)
-# async def analyze_requirements_api_fastapi(user_input: UserInput):
-#     """
-#     Analyzes user requirements for bridge design.
-#     - **span**: The required span of the bridge in meters.
-#     - **load**: The expected load on the bridge in kN/m.
-#     Returns an analysis ID and summary.
-#     """
-#     # ... implementation ...
-#     return AnalysisResult(...)
-
-@app.route('/api/v1/analyze_requirements', methods=['POST'])
-def analyze_requirements_api():
+@app.route('/api/v1/generate_design', methods=['POST'])
+def generate_design_api(): # Changed to sync
+    """
+    Generates a preliminary bridge design based on user requirements.
+    This endpoint now handles the initial analysis and design generation.
+    """
     try:
-        user_input = request.json
-        if not user_input or "user_requirements" not in user_input: # Basic validation
-            # In Flask, typically use abort() or return a custom response
+        data = request.json
+        if not data:
+            return jsonify({"error": "Request body must be JSON"}), 400
+
+        user_requirements = data.get("user_requirements")
+        project_conditions = data.get("project_conditions")
+        design_constraints = data.get("design_constraints")
+
+        if not user_requirements:
             return jsonify({"error": "Missing 'user_requirements' in request body"}), 400
 
-        # In a real app, process user_input and call BridgeService or LLMService
-        # e.g., result = await bridge_service.analyze_user_requirements(user_input["user_requirements"])
-        # For this example, we'll just simulate success or error based on input.
-        print(f"API: Received for analysis: {user_input}")
+        bridge_request_data = BridgeRequest(
+            user_requirements=user_requirements,
+            project_conditions=project_conditions if project_conditions else {},
+            design_constraints=design_constraints if design_constraints else {}
+        )
 
-        # Simulate a potential error from a service call
-        if user_input.get("user_requirements") == "trigger_error":
-            # Simulate an error returned by a service
-            # In a real app, this would be a caught exception or error response from a service
-            return jsonify({
-                "error": "Simulated service error during requirement analysis.",
-                "details": "The input 'trigger_error' was processed."
-            }), 500
+        logger.info(f"API: Received for design generation: {bridge_request_data.model_dump_json(indent=2)}")
 
+        # BridgeService.generate_preliminary_design is an async function
+        # Run the async function in a sync context
+        design_data_model: BridgeDesign = asyncio.run(bridge_service.generate_preliminary_design(bridge_request_data))
+
+        if "error" in design_data_model.bridge_type.lower() or (design_data_model.main_girder and "error" in design_data_model.main_girder):
+             logger.error(f"Design generation failed: {design_data_model.model_dump_json(indent=2)}")
+             return jsonify({"error": "Failed to generate design", "details": design_data_model.model_dump_json()}), 500
+
+        logger.info(f"API: Preliminary design generated successfully: ID {design_data_model.design_id}")
         return jsonify({
-            "analysis_id": "req_123_backend",
-            "summary": "Requirements successfully analyzed by backend.",
-            "received_input": user_input
-        })
+            "design_id": design_data_model.design_id,
+            "design_data": design_data_model.model_dump(), # Send the full design data back
+            "message": "Preliminary design generated successfully."
+        }), 200
+
     except Exception as e:
-        # Log the exception e
-        print(f"API Error in /analyze_requirements: {str(e)}") # Replace with proper logging
+        logger.error(f"API Error in /generate_design: {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred on the server.", "details": str(e)}), 500
+
+@app.route('/api/v1/generate_2d_drawing', methods=['POST'])
+def generate_2d_drawing_api():
+    """
+    Generates a 2D SVG drawing based on the provided design data.
+    """
+    try:
+        data = request.json
+        if not data or "design_data" not in data:
+            return jsonify({"error": "Missing 'design_data' in request body"}), 400
+
+        design_data_dict = data["design_data"]
+        # Validate if design_data_dict can be parsed into BridgeDesign, or trust it for now
+        # For robustness, one might do: BridgeDesign.model_validate(design_data_dict)
+
+        logger.info(f"API: Received for 2D drawing generation with design_id: {design_data_dict.get('design_id')}")
+
+        # Generate a simple elevation view for now
+        # Assumes design_data_dict has necessary fields like span_lengths, bridge_type, etc.
+        svg_content = svg_generator.generate_bridge_elevation(design_data_dict)
+        # In a more complex scenario, you might generate multiple SVGs (elevation, section)
+        # and return them, or a link to them.
+
+        if not svg_content or "<svg" not in svg_content: # Basic check
+            logger.error("SVG generation failed or produced empty content.")
+            return jsonify({"error": "Failed to generate 2D drawing content"}), 500
+
+        logger.info(f"API: 2D SVG drawing generated successfully for design_id: {design_data_dict.get('design_id')}")
         return jsonify({
-            "error": "An unexpected error occurred on the server.",
-            "details": str(e) # In production, you might not want to expose raw error details
-        }), 500
+            "drawing_id": str(uuid.uuid4()), # Generate a new ID for this drawing artifact
+            "svg_content": svg_content,
+            "format": "svg",
+            "based_on_design_id": design_data_dict.get("design_id")
+        }), 200
 
+    except Exception as e:
+        logger.error(f"API Error in /generate_2d_drawing: {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred while generating 2D drawing.", "details": str(e)}), 500
 
-@app.route('/api/v1/generate_design', methods=['POST'])
-def generate_design_api():
-    data = request.json
-    print(f"API: Received for design generation: {data}")
-    # In a real app, use data (e.g., requirements_id) to generate design
-    return jsonify({
-        "design_id": "design_456_backend",
-        "status": "completed",
-        "details": "Design scheme generated successfully by backend.",
-        "based_on": data.get("requirements_id")
-    })
+@app.route('/api/v1/generate_3d_model_data', methods=['POST'])
+def generate_3d_model_data_api():
+    """
+    Generates 3D model data (JSON scene description for Three.js) based on design data.
+    """
+    try:
+        data = request.json
+        if not data or "design_data" not in data:
+            return jsonify({"error": "Missing 'design_data' in request body"}), 400
 
-@app.route('/api/v1/generate_2d_drawings', methods=['POST'])
-def generate_2d_drawings_api():
-    data = request.json
-    print(f"API: Received for 2D drawing generation: {data}")
-    # In a real app, use data (e.g., design_id) to generate drawings
-    return jsonify({
-        "drawing_id": "draw_789_backend",
-        "format": "DWG",
-        "url": "/mock/path/to/drawing_backend.dwg",
-        "based_on": data.get("design_id")
-    })
+        design_data_dict = data["design_data"]
+        logger.info(f"API: Received for 3D model data generation with design_id: {design_data_dict.get('design_id')}")
 
-@app.route('/api/v1/generate_3d_model', methods=['POST'])
-def generate_3d_model_api():
-    data = request.json
-    print(f"API: Received for 3D model generation: {data}")
-    # In a real app, use data (e.g., design_id) to generate model
-    return jsonify({
-        "model_id": "model_abc_backend",
-        "format": "STL",
-        "url": "/mock/path/to/model_backend.stl",
-        "based_on": data.get("design_id")
-    })
+        # model_generator is ThreeJSGenerator instance
+        # It expects a dictionary structure that it can convert to JS scene code
+        # For Option B (JSON scene description), we'll make it generate a JSON object.
+        # This requires ThreeJSGenerator to have a method like `generate_scene_json`.
+        # For now, let's assume `generate_bridge_scene` is adapted or a new method is added.
+        # If `generate_bridge_scene` still returns JS code, we'd need to adjust the plan or the generator.
+        # Let's assume `model_generator.generate_scene_json(design_data_dict)`
 
-@app.route('/api/v1/designs/history', methods=['GET'])
-def design_history_api():
-    print(f"API: Received request for design history")
-    return jsonify([
-        {"id": "v1", "name": "Initial Design", "date": "2023-01-01"},
-        {"id": "v2", "name": "Revised Span Design", "date": "2023-01-15"}
-    ])
+        # Quick adaptation: If ThreeJSGenerator still makes JS code, we can't directly use it as JSON.
+        # model_generator is an instance of ThreeJSGenerator
+        # Call the generate_scene_data method which returns a dictionary
+        scene_json_data = model_generator.generate_scene_data(design_data_dict)
 
-@app.route('/api/v1/designs/<version_id>', methods=['GET'])
-def load_design_version_api(version_id):
-    print(f"API: Received request for design version: {version_id}")
-    # In a real app, fetch specific version details
-    return jsonify({
-        "id": version_id,
-        "name": f"Details for {version_id}",
-        "data": {"span": 120, "load": 60} if version_id == "v2" else {"span": 100, "load": 50}
-    })
+        if not scene_json_data: # Check if the data itself is None or empty (though get("error") is better for specific error reporting)
+            logger.error(f"3D model data generation failed: {scene_json_data.get('error', 'Unknown reason')}")
+            return jsonify({"error": "Failed to generate 3D model data", "details": scene_json_data.get("error")}), 500
+
+        logger.info(f"API: 3D model data (JSON scene) generated for design_id: {design_data_dict.get('design_id')}")
+        return jsonify({
+            "model_id": str(uuid.uuid4()),
+            "model_data": scene_json_data, # This should be the JSON scene description
+            "format": "json_scene_description", # Or "gltf_buffer" if using GLTF
+            "based_on_design_id": design_data_dict.get("design_id")
+        }), 200
+
+    except Exception as e:
+        logger.error(f"API Error in /generate_3d_model_data: {str(e)}", exc_info=True)
+        return jsonify({"error": "An unexpected error occurred while generating 3D model data.", "details": str(e)}), 500
+
+# Health check endpoint
+@app.route('/health', methods=['GET'])
+def health_check():
+    return jsonify({"status": "healthy"}), 200
 
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000) # Changed port to avoid conflict if 8000 is for FastAPI later
+    # Load environment variables from .env file for local development
+    # This is for Phase 3, but good to have the import structure early
+    try:
+        from dotenv import load_dotenv
+        load_dotenv()
+        logger.info("Loaded .env file")
+    except ImportError:
+        logger.info(".env file not loaded (python-dotenv not installed or no .env file). Relying on system environment variables.")
+
+    # Note: Flask's app.run() is not suitable for async routes if they are not handled correctly.
+    # For `async def` routes with Flask, you typically need an ASGI server like Hypercorn or Uvicorn,
+    # or to use `asyncio.run()` within the route if it's a simple case.
+    # However, `bridge_service.generate_preliminary_design` is async.
+    # A simple way to run this with Flask's dev server is to wrap the async call.
+    # This is a common workaround for Flask dev server. Gunicorn in Docker will handle it.
+
+    # Modifying the generate_design_api to be synchronous for Flask dev server compatibility
+    # The `await` keyword was used, which means this needs to be run with an async server or handled.
+    # For simplicity in this step, I will remove 'async' from 'generate_design_api'
+    # and use `asyncio.run()` for the async call. This is okay for dev.
+
+    # Re-defining the async endpoint to be sync for Flask dev server
+    # This is a common pattern: the Flask route itself is sync, but it calls async code.
+    original_generate_design_api = generate_design_api # save the async version
+
+    @app.route('/api/v1/generate_design', methods=['POST']) # Overwrite the previous async one for Flask dev server
+    def generate_design_api_sync():
+        return asyncio.run(original_generate_design_api())
+
+    # The original async definition of generate_design_api will be used by Gunicorn in Docker.
+    # For Flask dev server, we use the sync wrapper.
+    # This is a bit of a hack. Ideally, use an ASGI server like uvicorn for local dev too.
+    # For now, this allows `python app.py` to run.
+    # Gunicorn in the Dockerfile will correctly handle the `async def` route.
+    # Let's ensure the app instance for Gunicorn points to the one with the async route.
+    # The current structure should be fine as Gunicorn will import the module and see the async def.
+    # The redefinition above is only for `if __name__ == '__main__':`
+
+    app.run(debug=True, host="0.0.0.0", port=5000)
