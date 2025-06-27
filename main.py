@@ -1,4 +1,4 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, status
 from pydantic import BaseModel, Field
 from typing import Dict, Any
 
@@ -56,17 +56,30 @@ async def generate_3d_model_endpoint(design: BridgeDesign, model_options: ModelO
     # In a more advanced setup, the `design` and `model_options` objects themselves
     # might be processed or serialized to form a more complex input for the LLM.
     # For now, we directly use the description fields.
+    try:
+        generated_data = model_service.generate_model_from_design(
+            bridge_design_data=design.design_description,
+            model_requirements=model_options.requirements_description
+        )
 
-    generated_data = model_service.generate_model_from_design(
-        bridge_design_data=design.design_description,
-        model_requirements=model_options.requirements_description
-    )
+        if "error" in generated_data:
+            # Log the detailed error for server-side inspection
+            # (Assuming Model3DService adds logging for its errors)
+            print(f"Error generating 3D model: {generated_data.get('details')}") # Replace with logger.error if main.py gets one
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"Failed to generate 3D model: {generated_data.get('error', 'Unknown error from Model3DService')}"
+            )
 
-    if "error" in generated_data:
-        # Consider returning a non-200 HTTP status code for errors
-        # from fastapi.responses import JSONResponse
-        # return JSONResponse(status_code=500, content=generated_data)
-        return generated_data # For now, returning 200 with error in body
+    except HTTPException as http_exc: # Re-raise HTTPException
+        raise http_exc
+    except Exception as e:
+        # Log the unexpected error
+        print(f"Unexpected error in /api/generate_3d_model: {e}") # Replace with logger.error
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred while generating the 3D model: {str(e)}"
+        )
 
     return {
         "message": "3D model data generated successfully.",

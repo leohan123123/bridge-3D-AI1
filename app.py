@@ -39,14 +39,39 @@ def index():
 
 @app.route('/api/v1/analyze_requirements', methods=['POST'])
 def analyze_requirements_api():
-    user_input = request.json
-    # In a real app, process user_input and call LLM or other logic
-    print(f"API: Received for analysis: {user_input}")
-    return jsonify({
-        "analysis_id": "req_123_backend",
-        "summary": "Requirements successfully analyzed by backend.",
-        "received_input": user_input
-    })
+    try:
+        user_input = request.json
+        if not user_input or "user_requirements" not in user_input: # Basic validation
+            # In Flask, typically use abort() or return a custom response
+            return jsonify({"error": "Missing 'user_requirements' in request body"}), 400
+
+        # In a real app, process user_input and call BridgeService or LLMService
+        # e.g., result = await bridge_service.analyze_user_requirements(user_input["user_requirements"])
+        # For this example, we'll just simulate success or error based on input.
+        print(f"API: Received for analysis: {user_input}")
+
+        # Simulate a potential error from a service call
+        if user_input.get("user_requirements") == "trigger_error":
+            # Simulate an error returned by a service
+            # In a real app, this would be a caught exception or error response from a service
+            return jsonify({
+                "error": "Simulated service error during requirement analysis.",
+                "details": "The input 'trigger_error' was processed."
+            }), 500
+
+        return jsonify({
+            "analysis_id": "req_123_backend",
+            "summary": "Requirements successfully analyzed by backend.",
+            "received_input": user_input
+        })
+    except Exception as e:
+        # Log the exception e
+        print(f"API Error in /analyze_requirements: {str(e)}") # Replace with proper logging
+        return jsonify({
+            "error": "An unexpected error occurred on the server.",
+            "details": str(e) # In production, you might not want to expose raw error details
+        }), 500
+
 
 @app.route('/api/v1/generate_design', methods=['POST'])
 def generate_design_api():

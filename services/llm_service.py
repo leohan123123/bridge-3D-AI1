@@ -1,16 +1,41 @@
+# Ensure project root is in sys.path for standalone execution
+import sys
+from pathlib import Path
+_project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
+
 import httpx # For making HTTP requests to LLM APIs
 from config import LLM_CONFIG # Import configurations
 import json
 import subprocess # For local Ollama CLI calls if needed (alternative to HTTP)
 from typing import Dict, Any, Optional, Tuple
+import asyncio # For sleep
+import logging
+import time # For performance counter
+
+# Configure basic logging for this module
+logger = logging.getLogger(__name__)
+if not logger.handlers:
+    handler = logging.StreamHandler()
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
 
 class LLMService:
-    def __init__(self):
+    def __init__(self, max_retries=2, retry_delay=1):
+        logger.info(f"Initializing LLMService with max_retries={max_retries}, retry_delay={retry_delay}s")
         self.deepseek_config = LLM_CONFIG.get("deepseek", {})
         self.ollama_config = LLM_CONFIG.get("ollama", {})
-        self.qwen_config = LLM_CONFIG.get("qwen", {}) # Assuming Qwen might be local or API based
-
-        # Basic prompt template example
+        self.qwen_config = LLM_CONFIG.get("qwen", {})
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.call_stats = { # For LLM call counts and success rates
+            "deepseek": {"attempts": 0, "success": 0, "total_time_s": 0.0, "errors": 0},
+            "ollama": {"attempts": 0, "success": 0, "total_time_s": 0.0, "errors": 0},
+            "qwen": {"attempts": 0, "success": 0, "total_time_s": 0.0, "errors": 0}
+        }
         self.prompt_templates = {
             "extract_bridge_parameters": """
             Analyze the following user requirements for a bridge design and extract key parameters.
@@ -24,235 +49,282 @@ class LLMService:
             - specific_materials (e.g., "steel", "concrete")
             - budget_constraints (e.g., "low budget", "no limit")
             - aesthetic_preferences (e.g., "modern look", "classic design")
-            - environmental_factors (e.g., "high winds", "earthquake zone")
+            - environmental_factors (e.g., "high winds", "earthquake zone intensity 8", "corrosive environment")
+            - road_lanes_description (e.g., "双向四车道", "two lanes with pedestrian walkway", "single track railway")
 
             Example of desired JSON output:
             {{
-                "bridge_type_preference": "cable-stayed",
-                "span_length_description": "long river crossing, about 500m",
-                "load_requirements": "heavy vehicles and future light rail",
-                "site_terrain": "over water, coastal area",
-                "specific_materials": "corrosion-resistant steel and concrete",
-                "budget_constraints": null,
-                "aesthetic_preferences": "iconic and modern",
-                "environmental_factors": "high winds, saltwater environment"
+                "bridge_type_preference": "cable-stayed bridge with composite deck",
+                "span_length_description": "main span approx 500m, side spans 2x200m",
+                "load_requirements": "heavy vehicles (highway class A) and future light rail",
+                "site_terrain": "over water, coastal area with soft soil",
+                "specific_materials": "corrosion-resistant steel for cables and superstructure, high-strength concrete for towers",
+                "budget_constraints": "medium to high, focus on durability",
+                "aesthetic_preferences": "iconic and modern, slender profile",
+                "environmental_factors": "high winds (typhoon prone), saltwater environment, seismic zone intensity 7",
+                "road_lanes_description": "dual 3-lane carriageways with emergency shoulders"
             }}
 
             JSON Output:
             """
         }
 
-    async def _call_deepseek(self, prompt: str) -> Optional[Dict[str, Any]]:
-        if not self.deepseek_config.get("api_key") or self.deepseek_config["api_key"] == "YOUR_DEEPSEEK_API_KEY":
-            print("DeepSeek API key not configured. Skipping DeepSeek call.")
-            return None
+    def _update_stats_on_return(self, service_name: str, start_time: float, result: Optional[Dict]):
+        duration = time.perf_counter() - start_time
+        self.call_stats[service_name]["total_time_s"] += duration
+        if result and not result.get("error"):
+            self.call_stats[service_name]["success"] += 1
+            logger.info(f"{service_name.capitalize()} call successful in {duration:.2f}s.")
+        else:
+            self.call_stats[service_name]["errors"] += 1
+            logger.warning(f"{service_name.capitalize()} call failed or returned error after {duration:.2f}s. Result: {result}")
 
-        headers = {
-            "Authorization": f"Bearer {self.deepseek_config['api_key']}",
-            "Content-Type": "application/json"
-        }
-        # Adjust model name as per DeepSeek's offerings, e.g., 'deepseek-chat' or 'deepseek-coder'
-        payload = {
-            "model": "deepseek-chat", # Or other appropriate model
-            "messages": [{"role": "user", "content": prompt}],
-            "max_tokens": 1024, # Adjust as needed
-            "temperature": 0.7 # Adjust for creativity vs. predictability
-        }
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.deepseek_config['base_url']}/v1/chat/completions", # Verify exact endpoint from DeepSeek docs
-                    headers=headers,
-                    json=payload,
-                    timeout=30.0 # seconds
-                )
-                response.raise_for_status() # Raise an exception for HTTP errors
-                result = response.json()
-                # Extract the content, structure might vary based on API version
-                if result.get("choices") and result["choices"][0].get("message"):
-                    content_str = result["choices"][0]["message"].get("content")
-                    return json.loads(content_str) # Assuming LLM returns valid JSON string
-                return {"error": "Unexpected response structure from DeepSeek", "details": result}
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error calling DeepSeek: {e.response.status_code} - {e.response.text}")
-            return {"error": "HTTP error", "status_code": e.response.status_code, "details": e.response.text}
-        except httpx.RequestError as e:
-            print(f"Request error calling DeepSeek: {e}")
-            return {"error": "Request error", "details": str(e)}
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from DeepSeek response: {e}")
-            return {"error": "JSON decode error", "details": str(e), "raw_response": content_str if 'content_str' in locals() else "N/A"}
-        except Exception as e:
-            print(f"An unexpected error occurred with DeepSeek: {e}")
-            return {"error": "Unexpected error", "details": str(e)}
+
+    async def _call_deepseek(self, prompt: str) -> Optional[Dict[str, Any]]:
+        service_name = "deepseek"
+        if not self.deepseek_config.get("api_key") or self.deepseek_config["api_key"] == "YOUR_DEEPSEEK_API_KEY":
+            logger.warning("DeepSeek API key not configured or is placeholder. Skipping DeepSeek call.")
+            return None # Not counted as an attempt if skipped due to config
+
+        headers = {"Authorization": f"Bearer {self.deepseek_config['api_key']}", "Content-Type": "application/json"}
+        payload = {"model": "deepseek-chat", "messages": [{"role": "user", "content": prompt}], "max_tokens": 1024, "temperature": 0.7}
+
+        self.call_stats[service_name]["attempts"] += 1
+        start_time = time.perf_counter()
+        last_exception_info = None
+
+        for attempt in range(self.max_retries + 1):
+            logger.info(f"Attempting DeepSeek call ({attempt + 1}/{self.max_retries + 1})...")
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(f"{self.deepseek_config['base_url']}/v1/chat/completions", headers=headers, json=payload, timeout=30.0)
+                    response.raise_for_status()
+                    result = response.json()
+                    if result.get("choices") and result["choices"][0].get("message"):
+                        content_str = result["choices"][0]["message"].get("content")
+                        parsed_content = json.loads(content_str)
+                        self._update_stats_on_return(service_name, start_time, parsed_content)
+                        return parsed_content
+                    logger.error(f"Unexpected response structure from DeepSeek: {result}")
+                    last_exception_info = {"error": "Unexpected response structure from DeepSeek", "details": result}
+                    self._update_stats_on_return(service_name, start_time, last_exception_info)
+                    return last_exception_info
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error calling DeepSeek: {e.response.status_code} - {e.response.text}", exc_info=True)
+                last_exception_info = {"error": "HTTP error", "status_code": e.response.status_code, "details": e.response.text}
+                if not (500 <= e.response.status_code < 600):
+                    self._update_stats_on_return(service_name, start_time, last_exception_info)
+                    return last_exception_info
+            except httpx.RequestError as e:
+                logger.error(f"Request error calling DeepSeek: {e}", exc_info=True)
+                last_exception_info = {"error": "Request error", "details": str(e)}
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON from DeepSeek response: {e}", exc_info=True)
+                last_exception_info = {"error": "JSON decode error", "details": str(e), "raw_response": locals().get('content_str', "N/A")}
+                self._update_stats_on_return(service_name, start_time, last_exception_info)
+                return last_exception_info
+            except Exception as e:
+                logger.error(f"An unexpected error occurred with DeepSeek: {e}", exc_info=True)
+                last_exception_info = {"error": "Unexpected error", "details": str(e)}
+
+            if attempt < self.max_retries:
+                logger.info(f"Waiting {self.retry_delay}s before retrying DeepSeek...")
+                await asyncio.sleep(self.retry_delay)
+
+        self._update_stats_on_return(service_name, start_time, last_exception_info)
+        return last_exception_info
 
     async def _call_ollama(self, prompt: str, model_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        service_name = "ollama"
         ollama_base_url = self.ollama_config.get("base_url")
         if not ollama_base_url:
-            print("Ollama base URL not configured. Skipping Ollama call.")
+            logger.warning("Ollama base URL not configured. Skipping Ollama call.")
             return None
 
-        # Use provided model_name or default from config, or a general default
         effective_model_name = model_name or self.ollama_config.get("model", "llama2")
+        payload = {"model": effective_model_name, "prompt": prompt, "stream": False, "format": "json"}
 
-        payload = {
-            "model": effective_model_name,
-            "prompt": prompt,
-            "stream": False, # Get the full response at once
-            "format": "json" # Request JSON output if supported by the model and Ollama version
-        }
-        try:
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{ollama_base_url}/api/generate", # Standard Ollama generate endpoint
-                    json=payload,
-                    timeout=60.0 # Local models can be slower
-                )
-                response.raise_for_status()
-                result_text = response.json().get("response")
-                if result_text:
-                    return json.loads(result_text) # Assuming the model's response string is valid JSON
-                return {"error": "Empty response content from Ollama", "details": response.json()}
-        except httpx.HTTPStatusError as e:
-            print(f"HTTP error calling Ollama: {e.response.status_code} - {e.response.text}")
-            return {"error": "HTTP error", "status_code": e.response.status_code, "details": e.response.text}
-        except httpx.RequestError as e:
-            # This catches network errors, like Ollama server not running
-            print(f"Request error calling Ollama (is Ollama server running at {ollama_base_url}?): {e}")
-            return {"error": "Request error (Ollama server unreachable?)", "details": str(e)}
-        except json.JSONDecodeError as e:
-            print(f"Error decoding JSON from Ollama response: {e}")
-            return {"error": "JSON decode error", "details": str(e), "raw_response": result_text if 'result_text' in locals() else "N/A"}
-        except Exception as e:
-            print(f"An unexpected error occurred with Ollama: {e}")
-            return {"error": "Unexpected error", "details": str(e)}
+        self.call_stats[service_name]["attempts"] += 1
+        start_time = time.perf_counter()
+        last_exception_info = None
+
+        for attempt in range(self.max_retries + 1):
+            logger.info(f"Attempting Ollama call ({attempt + 1}/{self.max_retries + 1}) to model '{effective_model_name}' at {ollama_base_url}...")
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(f"{ollama_base_url}/api/generate", json=payload, timeout=60.0)
+                    response.raise_for_status()
+                    result_text = response.json().get("response")
+                    if result_text:
+                        parsed_content = json.loads(result_text)
+                        self._update_stats_on_return(service_name, start_time, parsed_content)
+                        return parsed_content
+                    logger.error(f"Empty response content from Ollama model '{effective_model_name}'. Details: {response.json()}")
+                    last_exception_info = {"error": "Empty response content from Ollama", "details": response.json()}
+                    self._update_stats_on_return(service_name, start_time, last_exception_info)
+                    return last_exception_info
+            except httpx.HTTPStatusError as e:
+                logger.error(f"HTTP error calling Ollama model '{effective_model_name}': {e.response.status_code} - {e.response.text}", exc_info=True)
+                last_exception_info = {"error": "HTTP error", "status_code": e.response.status_code, "details": e.response.text}
+                if not (500 <= e.response.status_code < 600):
+                    self._update_stats_on_return(service_name, start_time, last_exception_info)
+                    return last_exception_info
+            except httpx.RequestError as e:
+                logger.error(f"Request error calling Ollama (is Ollama server running at {ollama_base_url}?): {e}", exc_info=True)
+                last_exception_info = {"error": "Request error (Ollama server unreachable?)", "details": str(e)}
+            except json.JSONDecodeError as e:
+                logger.error(f"Error decoding JSON from Ollama model '{effective_model_name}' response: {e}", exc_info=True)
+                last_exception_info = {"error": "JSON decode error", "details": str(e), "raw_response": locals().get('result_text', "N/A")}
+                self._update_stats_on_return(service_name, start_time, last_exception_info)
+                return last_exception_info
+            except Exception as e:
+                logger.error(f"An unexpected error occurred with Ollama model '{effective_model_name}': {e}", exc_info=True)
+                last_exception_info = {"error": "Unexpected error", "details": str(e)}
+
+            if attempt < self.max_retries:
+                logger.info(f"Waiting {self.retry_delay}s before retrying Ollama model '{effective_model_name}'...")
+                await asyncio.sleep(self.retry_delay)
+
+        self._update_stats_on_return(service_name, start_time, last_exception_info)
+        return last_exception_info
 
     async def _call_qwen(self, prompt: str) -> Optional[Dict[str, Any]]:
-        # This is a placeholder. Qwen integration depends on how it's hosted.
-        # If it's a local model via a CLI or custom Python script:
+        service_name = "qwen"
+        self.call_stats[service_name]["attempts"] += 1
+        start_time = time.perf_counter()
+
         model_path = self.qwen_config.get("model_path")
-        if not model_path:
-            print("Qwen model path not configured. Skipping Qwen call.")
-            return None
+        # Always return the mock response for Qwen in this testing phase,
+        # regardless of model_path, as actual Qwen call is not implemented.
+        logger.info("Using Qwen mock placeholder response (actual call not implemented).")
+        user_input_marker = 'User Requirements: "'
+        prompt_start_index = prompt.find(user_input_marker)
+        user_input = "generic input"
+        if prompt_start_index != -1:
+            prompt_start_index += len(user_input_marker)
+            prompt_end_index = prompt.find('"', prompt_start_index)
+            if prompt_end_index != -1: user_input = prompt[prompt_start_index:prompt_end_index][:100]
 
-        print(f"Placeholder: Qwen model at {model_path} would be called with prompt: '{prompt[:100]}...'")
-        # Example: Simulate calling a local script that interacts with Qwen
-        # try:
-        #     process = subprocess.run(
-        #         ["python", "run_qwen_model.py", "--prompt", prompt], # Fictional script
-        #         capture_output=True, text=True, check=True, timeout=120
-        #     )
-        #     return json.loads(process.stdout)
-        # except FileNotFoundError:
-        #     return {"error": "Qwen runner script not found."}
-        # except subprocess.CalledProcessError as e:
-        #     return {"error": "Error running Qwen model", "details": e.stderr}
-        # except json.JSONDecodeError as e:
-        #     return {"error": "Error decoding Qwen JSON output", "details": str(e)}
-        # except Exception as e:
-        #     return {"error": f"Unexpected error with Qwen: {e}"}
-
-        # If Qwen is exposed via an API (similar to DeepSeek or Ollama):
-        # Implement httpx call similar to _call_deepseek or _call_ollama
-
-        # Mock response for now
-        return {"message": "Qwen integration is a placeholder.", "parameters_extracted": {"mock_qwen_param": "value"}}
-
+        mock_response = {
+            "bridge_type_preference": "Mocked Qwen Type (e.g., Beam Bridge if 'beam' in input)",
+            "span_length_description": f"Mocked Qwen Span for '{user_input}' (e.g., 50m)",
+            "load_requirements": "Mocked Qwen Load (e.g., Standard Highway)",
+            "site_terrain": "Mocked Qwen Terrain (e.g., Flat area)",
+            "specific_materials": "Mocked Qwen Materials (e.g., Concrete, Steel)",
+            "budget_constraints": "Mocked Qwen Budget (e.g., Medium)",
+            "aesthetic_preferences": "Mocked Qwen Aesthetics (e.g., Functional)",
+            "environmental_factors": "Mocked Qwen Environment (e.g., Moderate climate)",
+            "source_model": "qwen_mock_placeholder"
+        }
+        self._update_stats_on_return(service_name, start_time, mock_response)
+        return mock_response
 
     def get_prompt(self, template_name: str, **kwargs) -> Optional[str]:
-        """
-        Formats a prompt using a predefined template and provided arguments.
-        """
+        # ... (same as before, no changes to this method)
         template = self.prompt_templates.get(template_name)
         if not template:
-            print(f"Error: Prompt template '{template_name}' not found.")
+            logger.error(f"Prompt template '{template_name}' not found.")
             return None
         try:
             return template.format(**kwargs)
         except KeyError as e:
-            print(f"Error: Missing argument {e} for prompt template '{template_name}'.")
+            logger.error(f"Missing argument {e} for prompt template '{template_name}'.")
             return None
 
+
     async def analyze_text_with_failover(self, text_to_analyze: str, prompt_template_name: str = "extract_bridge_parameters") -> Tuple[Optional[Dict[str, Any]], str]:
-        """
-        Analyzes text using a preferred LLM, with failover to other configured LLMs.
-        Tries DeepSeek, then Ollama, then Qwen.
-        Returns a tuple: (result_dict, provider_name_str)
-        """
+        # ... (same as before, no changes to this method's core logic)
+        logger.info(f"Starting LLM analysis for text: '{text_to_analyze[:100]}...' using template '{prompt_template_name}'")
         prompt = self.get_prompt(prompt_template_name, user_input=text_to_analyze)
         if not prompt:
             return {"error": "Failed to generate prompt from template"}, "system"
 
-        # 1. Try DeepSeek
-        print("Attempting analysis with DeepSeek...")
+        logger.info("Attempting analysis with DeepSeek...")
         deepseek_result = await self._call_deepseek(prompt)
         if deepseek_result and not deepseek_result.get("error"):
-            print("Successfully analyzed with DeepSeek.")
+            logger.info("Successfully analyzed with DeepSeek.") # This log is now part of _update_stats_on_return
             return deepseek_result, "DeepSeek"
-        print(f"DeepSeek analysis failed or incomplete. Result: {deepseek_result}")
+        # logger.warning already part of _update_stats_on_return
 
-        # 2. Try Ollama (if DeepSeek failed)
-        print("Attempting analysis with Ollama...")
-        # You might want to use a simpler prompt for local models if the full JSON one is too complex
+        logger.info("Attempting analysis with Ollama...")
         ollama_result = await self._call_ollama(prompt)
         if ollama_result and not ollama_result.get("error"):
-            print("Successfully analyzed with Ollama.")
+            # logger.info("Successfully analyzed with Ollama.")
             return ollama_result, "Ollama"
-        print(f"Ollama analysis failed or incomplete. Result: {ollama_result}")
 
-        # 3. Try Qwen (if Ollama also failed)
-        print("Attempting analysis with Qwen...")
-        qwen_result = await self._call_qwen(prompt) # This is currently a placeholder
+        logger.info("Attempting analysis with Qwen...")
+        qwen_result = await self._call_qwen(prompt)
         if qwen_result and not qwen_result.get("error"):
-            print("Successfully analyzed with Qwen (placeholder).")
+            # logger.info("Successfully analyzed with Qwen.")
             return qwen_result, "Qwen"
-        print(f"Qwen analysis failed or incomplete. Result: {qwen_result}")
 
-        print("All LLM providers failed.")
+        logger.error("All LLM providers failed for text analysis.")
         return {"error": "All LLM providers failed or returned errors.",
                 "deepseek_attempt": deepseek_result,
                 "ollama_attempt": ollama_result,
                 "qwen_attempt": qwen_result
                }, "none"
 
-# Example usage (async context needed)
+    def get_call_statistics(self) -> Dict:
+        """Returns the collected call statistics."""
+        return self.call_stats
+
+    def log_call_statistics(self):
+        """Logs the collected call statistics."""
+        logger.info("LLM Call Statistics:")
+        for service, stats in self.call_stats.items():
+            avg_time = (stats["total_time_s"] / stats["success"]) if stats["success"] > 0 else 0
+            logger.info(f"  {service.capitalize()}: Attempts={stats['attempts']}, Success={stats['success']}, Errors={stats['errors']}, "
+                        f"TotalTime={stats['total_time_s']:.2f}s, AvgTimePerSuccess={avg_time:.2f}s")
+
+
 async def main_test():
-    llm_service = LLMService()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
-    # Test prompt generation
-    test_prompt = llm_service.get_prompt("extract_bridge_parameters", user_input="Design a very long bridge for trains over a wide river.")
-    if test_prompt:
-        print("\nGenerated Prompt:\n", test_prompt)
+    logger.info("--- Running LLM Service Standalone Test ---")
+    llm_service = LLMService(max_retries=1, retry_delay=0.2)
 
-    # Test analysis with failover
-    # Ensure your LLM_CONFIG in config.py is set up, especially DeepSeek API key for a real test
-    # or that Ollama is running locally.
-    print("\nTesting text analysis with failover...")
+    # ... (rest of main_test remains the same)
+    test_prompt_gen = llm_service.get_prompt("extract_bridge_parameters", user_input="Design a very long bridge for trains over a wide river.")
+    if test_prompt_gen:
+        logger.info(f"Generated Prompt Example:\n{test_prompt_gen[:200]}...")
+
+    logger.info("Testing text analysis with failover...")
     analysis_input = "I need a sturdy pedestrian bridge to cross a small canyon, approximately 50 meters long. Aesthetics are important, something modern."
 
-    # To actually test DeepSeek, replace 'YOUR_DEEPSEEK_API_KEY' in config.py
-    # To test Ollama, ensure it's running: `ollama serve` and you have a model like `ollama pull llama2`
+    original_deepseek_key = llm_service.deepseek_config.get("api_key")
+    original_ollama_url = llm_service.ollama_config.get("base_url")
 
-    # Temporarily disable DeepSeek for local testing if key is not set
-    # original_deepseek_key = llm_service.deepseek_config.get("api_key")
-    # if llm_service.deepseek_config.get("api_key") == "YOUR_DEEPSEEK_API_KEY":
-    #    llm_service.deepseek_config["api_key"] = None # Disable for this test run
+    logger.info("Simulating DeepSeek API key not configured and Ollama server down for this test run...")
+    llm_service.deepseek_config["api_key"] = None
+    llm_service.ollama_config["base_url"] = "http://localhost:1111"
 
     result, provider = await llm_service.analyze_text_with_failover(analysis_input)
 
-    # llm_service.deepseek_config["api_key"] = original_deepseek_key # Restore key if changed
+    llm_service.deepseek_config["api_key"] = original_deepseek_key
+    llm_service.ollama_config["base_url"] = original_ollama_url
 
-    print(f"\nAnalysis Result from {provider}:")
+    logger.info(f"Standalone Test Analysis Result from Provider '{provider}':")
     if result:
-        print(json.dumps(result, indent=2))
+        logger.info(json.dumps(result, indent=2, ensure_ascii=False))
     else:
-        print("No result obtained.")
+        logger.warning("No result obtained from standalone test.")
+
+    llm_service.log_call_statistics() # Log stats at the end of the test
+    logger.info("--- LLM Service Standalone Test Finished ---")
 
 if __name__ == "__main__":
-    import asyncio
-    # To run this test:
-    # 1. Make sure config.py has your DeepSeek API key (or Ollama is running).
-    # 2. Run `python -m services.llm_service` from the project root.
-    #    (You might need to adjust PYTHONPATH if imports fail: `export PYTHONPATH=.`)
-    print("Running LLM Service standalone test...")
+    # Add project root to sys.path for standalone execution, allowing imports like 'config'
+    import sys
+    from pathlib import Path
+    project_root = Path(__file__).resolve().parent.parent
+    if str(project_root) not in sys.path:
+        sys.path.insert(0, str(project_root))
+    # Re-import config if it failed due to path initially (though previous import at top level might still hold if it worked once)
+    # This is more for robustness if script is imported then run.
+    try:
+        from config import LLM_CONFIG
+    except ImportError:
+        print("Failed to re-import config. Ensure PYTHONPATH is set correctly or run from project root.")
+
     asyncio.run(main_test())

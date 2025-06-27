@@ -107,18 +107,45 @@ class DrawingService:
         return drawings
 
 DRAWING_PROMPT = """
-基于以下桥梁设计数据，生成详细的SVG绘图指令：
+基于以下桥梁设计数据和图纸要求，生成用于绘制工程图纸的结构化JSON描述。
 
-设计数据：{bridge_design}
-图纸类型：{drawing_type}
-比例要求：{scale}
+设计数据 (JSON):
+{bridge_design}
 
-请输出包含以下内容的SVG绘图指令：
-1. 主体结构线条（坐标、线型、线宽）
-2. 尺寸标注（位置、数值、样式）
-3. 材料标注（文字、位置、引出线）
-4. 图例和标题栏
-5. 技术要求说明
+图纸类型: {drawing_type}
+绘图比例: 1:{scale}
 
-确保符合《房屋建筑CAD制图统一规则》标准。
+请输出一个JSON对象，该对象包含绘制指定图纸类型所需的图形元素描述。
+主要包含以下键：'view_port', 'elements', 'title_block'。
+
+'elements' 应为一个数组，包含各种绘图元素，例如：
+- line: {{ "type": "line", "x1": ..., "y1": ..., "x2": ..., "y2": ..., "stroke": "black", "stroke_width": 1 }}
+- polyline: {{ "type": "polyline", "points": "x1,y1 x2,y2 ...", "stroke": "black", "fill": "none" }}
+- circle: {{ "type": "circle", "cx": ..., "cy": ..., "r": ..., "stroke": "black", "fill": "none" }}
+- text: {{ "type": "text", "x": ..., "y": ..., "content": "...", "font_size": "10px" }}
+- dimension: {{ "type": "dimension", "points": [...], "text": "...", "style": "linear/angular" }}
+  (Dimensioning is complex; provide key points and text. Actual rendering may simplify this.)
+
+'title_block' 应包含图纸标题、比例、日期等信息。
+
+示例输出结构 (针对 "bridge_elevation" 类型):
+{{
+  "view_port": {{ "width": 800, "height": 600 }}, // Suggested drawing area
+  "elements": [
+    {{ "type": "polyline", "points": "50,100 750,100 750,150 50,150 50,100", "stroke": "black", "stroke_width": 2, "note": "Main girder outline" }},
+    {{ "type": "line", "x1": 150, "y1": 150, "x2": 150, "y2": 250, "stroke": "black", "stroke_width": 1.5, "note": "Pier 1 centerline" }},
+    {{ "type": "text", "x": 400, "y": 50, "content": "桥梁立面图 ({drawing_type})", "font_size": "16px" }},
+    {{ "type": "dimension", "points": [[50,100], [750,100]], "text": "跨径 = {span_from_bridge_design}m", "style": "horizontal_top" }}
+  ],
+  "title_block": {{
+    "drawing_title": "桥梁立面图",
+    "project_name": "{project_name_from_bridge_design}",
+    "scale": "1:{scale}",
+    "date": "{current_date}",
+    "drawn_by": "AI Assistant"
+  }}
+}}
+
+确保所有几何信息、尺寸标注等与输入的 `bridge_design` 数据一致，并符合 `{drawing_type}` 的要求。
+JSON Output:
 """
